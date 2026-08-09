@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:orientation="vertical"
-    android:padding="24dp"
+    android:padding="20dp"
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
     <TextView
         android:text="JJ斗地主记牌器"
-        android:textSize="24sp"
+        android:textSize="22sp"
         android:textStyle="bold"
         android:layout_marginBottom="8dp"
         android:layout_width="wrap_content"
@@ -15,9 +15,9 @@
 
     <TextView
         android:id="@+id/tv_status"
-        android:text="首次使用需要开启「显示在其他应用上层」权限。点下方按钮会自动跳转系统设置，找到 JJ记牌器 并允许。"
+        android:text="首次使用需要开启「显示在其他应用上层」权限。"
         android:textSize="14sp"
-        android:layout_marginBottom="20dp"
+        android:layout_marginBottom="16dp"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content" />
 
@@ -25,6 +25,25 @@
         android:id="@+id/btn_start"
         android:text="开始记牌"
         android:textSize="18sp"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content" />
+
+    <TextView
+        android:id="@+id/tv_log"
+        android:text="运行日志: (无)"
+        android:textSize="11sp"
+        android:typeface="monospace"
+        android:background="#22000000"
+        android:padding="8dp"
+        android:layout_marginTop="16dp"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <Button
+        android:id="@+id/btn_clear"
+        android:text="清除日志"
+        android:textSize="14sp"
         android:layout_width="match_parent"
         android:layout_height="wrap_content" />
 

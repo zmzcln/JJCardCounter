@@ -33,7 +33,8 @@ import java.nio.ByteBuffer;
 
 /**
  * 核心服务：录屏 -> 定时截图 -> 识别手牌区/出牌区 -> 更新记牌器 -> 刷新悬浮窗。
- * 坐标使用归一化比例（相对屏幕尺寸），适配 JJ 斗地主 2400x1080 横屏。
+ * 坐标使用归一化比例（相对屏幕尺寸）。
+ * v1.0.3：每个关键步骤写 MyApplication.log，便于真机崩溃诊断。
  */
 public class CardCounterService extends Service {
     private static final String TAG = "JJCardCounter";
@@ -49,24 +50,22 @@ public class CardCounterService extends Service {
     private CardRecognizer recognizer;
     private final CardCounter counter = new CardCounter();
     private boolean running = false;
+    private boolean initialized = false;
+    private int tickCount = 0;
 
     // 手牌区（底部一排），归一化 [x0,y0,x1,y1]
-    // 实测 jj_01：y 约 0.70h~0.97h，14 张牌露出牌角。
     private final float[] handArea = {0.0f, 0.70f, 1.0f, 0.97f};
-    // 出牌区（三家各自出牌的位置，归一化 [x0,y0,x1,y1]）。
-    // 要求裁剪框"紧包"住那一排牌（牌从框左缘开始铺满），recognizePlay 才能对齐。
-    //  - 左家(上家)：已在 jj_01 实测验证（6 6 6 5 5 5 六张全部识别正确）。
-    //  - 中(自己)、右(下家)：为按同法估算的坐标，需在各家出牌时于手机上校准。
-    //    坐标不准时 NCC 偏低会被阈值过滤，不会计错，只是暂时识别不到。
+    // 出牌区（三家各自出牌的位置）。坐标系待手机上按真实布局校准。
     private final float[][] playAreas = {
-            {0.27f, 0.24f, 0.42f, 0.46f}, // 左家（已验证）
-            {0.34f, 0.18f, 0.60f, 0.66f}, // 自己（中下，待校准）
-            {0.58f, 0.24f, 0.73f, 0.46f}  // 右家（待校准）
+            {0.27f, 0.24f, 0.42f, 0.46f}, // 左家
+            {0.34f, 0.18f, 0.60f, 0.66f}, // 自己（中下）
+            {0.58f, 0.24f, 0.73f, 0.46f}  // 右家
     };
 
     @Override
     public void onCreate() {
         super.onCreate();
+        MyApplication.log("SERVICE onCreate start");
         try {
             wm = (WindowManager) getSystemService(WINDOW_SERVICE);
             DisplayMetrics m = new DisplayMetrics();
@@ -74,13 +73,19 @@ public class CardCounterService extends Service {
             density = m.densityDpi;
             screenW = m.widthPixels;
             screenH = m.heightPixels;
+            MyApplication.log("screen=" + screenW + "x" + screenH + " density=" + density);
+
             recognizer = new CardRecognizer(getApplicationContext());
             recognizer.loadTemplates();
+            MyApplication.log("templates loaded; templateOK=" + recognizer.isLoaded());
+
             initFloatView();
-            // Android 8+ 前台服务必须在创建后尽快 startForeground。
             createChannelAndForeground();
-        } catch (Exception e) {
+            initialized = true;
+            MyApplication.log("SERVICE onCreate OK");
+        } catch (Throwable e) {
             Log.e(TAG, "onCreate failed", e);
+            MyApplication.log("SERVICE onCreate FAILED: " + Log.getStackTraceString(e));
         }
     }
 
@@ -101,19 +106,27 @@ public class CardCounterService extends Service {
         lp.y = 0;
         wm.addView(floatView, lp);
         floatView.findViewById(R.id.btn_close).setOnClickListener(v -> stopSelf());
+        MyApplication.log("floatView added");
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) {
+        MyApplication.log("onStartCommand start");
+        if (!initialized) {
+            MyApplication.log("onStartCommand: not initialized, stop");
+            stopSelf();
             return START_NOT_STICKY;
         }
-        // 先保证前台服务状态，避免 5 秒限制崩溃。
+        if (intent == null) {
+            MyApplication.log("onStartCommand: intent null");
+            return START_NOT_STICKY;
+        }
         createChannelAndForeground();
 
         try {
             int code = intent.getIntExtra("code", -1);
             Intent data = intent.getParcelableExtra("data");
+            MyApplication.log("code=" + code + " data=" + (data != null));
             if (data == null) {
                 showError("录屏授权数据为空，请重新启动应用授权。");
                 return START_NOT_STICKY;
@@ -125,16 +138,19 @@ public class CardCounterService extends Service {
                 showError("MediaProjection 创建失败，请重新授权录屏。");
                 return START_NOT_STICKY;
             }
+            MyApplication.log("MediaProjection created");
 
             mImageReader = ImageReader.newInstance(screenW, screenH, PixelFormat.RGBA_8888, 2);
             mVirtualDisplay = mMediaProjection.createVirtualDisplay("jj", screenW, screenH, density,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                     mImageReader.getSurface(), null, null);
+            MyApplication.log("VirtualDisplay created");
             running = true;
             showText("记牌器运行中...");
             handler.postDelayed(this::tick, 1000);
-        } catch (Exception e) {
+        } catch (Throwable e) {
             Log.e(TAG, "onStartCommand failed", e);
+            MyApplication.log("onStartCommand FAILED: " + Log.getStackTraceString(e));
             showError("启动失败: " + e.getMessage());
         }
         return START_STICKY;
@@ -155,11 +171,23 @@ public class CardCounterService extends Service {
                 counter.update(hand, desk);
                 updateUI();
                 bmp.recycle();
+                tickCount++;
+                if (tickCount == 1) {
+                    MyApplication.log("first tick OK; handCount=" + sum(hand)
+                            + " deskCount=" + sum(desk));
+                }
             }
-        } catch (Exception e) {
+        } catch (Throwable e) {
             Log.e(TAG, "tick error", e);
+            MyApplication.log("tick FAILED: " + Log.getStackTraceString(e));
         }
         handler.postDelayed(this::tick, 1500);
+    }
+
+    private static int sum(int[] a) {
+        int s = 0;
+        for (int v : a) s += v;
+        return s;
     }
 
     private Bitmap cropArea(Bitmap src, float[] a) {
@@ -193,11 +221,11 @@ public class CardCounterService extends Service {
     private void updateUI() {
         int[] rem = counter.getRemaining();
         StringBuilder sb = new StringBuilder();
-        sb.append("剩余牌  ");
+        sb.append("剩余  ");
         for (int i = 2; i < 15; i++) {
             sb.append(CardCounter.TYPE_NAMES[i]).append(':').append(rem[i]).append(" ");
         }
-        sb.append("  王:").append(rem[0] + rem[1]);
+        sb.append("王:").append(rem[0] + rem[1]);
         showText(sb.toString());
     }
 
@@ -209,12 +237,18 @@ public class CardCounterService extends Service {
 
     private void showError(String msg) {
         Log.e(TAG, msg);
+        MyApplication.log("UI ERROR: " + msg);
         if (tvRemain != null) {
             tvRemain.post(() -> tvRemain.setText("[错误] " + msg));
         }
     }
 
     private void createChannelAndForeground() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            NotificationChannel ch = new NotificationChannel("jj_chan", "jj",
+                    NotificationManager.IMPORTANCE_LOW);
+            ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(ch);
+        }
         Notification.Builder b = new Notification.Builder(this);
         Intent ni = new Intent(this, MainActivity.class);
         b.setContentIntent(PendingIntent.getActivity(this, 0, ni, PendingIntent.FLAG_IMMUTABLE))
@@ -223,11 +257,6 @@ public class CardCounterService extends Service {
                 .setContentText("服务运行中");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             b.setChannelId("jj_chan");
-            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (nm.getNotificationChannel("jj_chan") == null) {
-                nm.createNotificationChannel(new NotificationChannel("jj_chan", "jj",
-                        NotificationManager.IMPORTANCE_LOW));
-            }
         }
         startForeground(1, b.build());
     }
@@ -235,6 +264,7 @@ public class CardCounterService extends Service {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        if (wm == null) return;
         DisplayMetrics m = new DisplayMetrics();
         wm.getDefaultDisplay().getMetrics(m);
         screenW = m.widthPixels;
@@ -243,11 +273,13 @@ public class CardCounterService extends Service {
 
     @Override
     public void onDestroy() {
+        MyApplication.log("SERVICE onDestroy");
         running = false;
         handler.removeCallbacksAndMessages(null);
         try {
             if (floatView != null) wm.removeView(floatView);
-        } catch (Exception ignored) {}
+        } catch (Exception ignored) {
+        }
         if (mVirtualDisplay != null) mVirtualDisplay.release();
         if (mMediaProjection != null) mMediaProjection.stop();
         super.onDestroy();

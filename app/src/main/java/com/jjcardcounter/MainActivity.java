@@ -14,7 +14,9 @@ public class MainActivity extends Activity {
     private static final int REQ_OVERLAY = 101;
 
     private TextView status;
+    private TextView tvLog;
     private Button start;
+    private Button btnClear;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -22,9 +24,12 @@ public class MainActivity extends Activity {
         setContentView(R.layout.activity_main);
 
         status = findViewById(R.id.tv_status);
+        tvLog = findViewById(R.id.tv_log);
         start = findViewById(R.id.btn_start);
+        btnClear = findViewById(R.id.btn_clear);
 
         updateUiState();
+        showLog();
 
         start.setOnClickListener(v -> {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
@@ -33,21 +38,30 @@ public class MainActivity extends Activity {
             }
             requestCapture();
         });
+
+        btnClear.setOnClickListener(v -> {
+            MyApplication.clearLog();
+            tvLog.setText("(日志已清空)");
+        });
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         updateUiState();
-        // If user just came back from granting overlay permission, continue to capture.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && Settings.canDrawOverlays(this)) {
-            requestCapture();
+        showLog();
+    }
+
+    private void showLog() {
+        if (tvLog != null) {
+            String log = MyApplication.readLog();
+            tvLog.setText("运行日志:\n" + log);
         }
     }
 
     private void updateUiState() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            status.setText("首次使用需要开启\"显示在其他应用上层\"权限。\n点下方按钮会自动跳转系统设置，找到 JJ记牌器 并允许。");
+            status.setText("首次使用需要开启「显示在其他应用上层」权限。\n点上方按钮会自动跳转系统设置，找到 JJ记牌器 并允许，然后返回本应用再点一次「开始记牌」。");
             start.setText("去开启悬浮窗权限");
         } else {
             status.setText("权限已就绪，点击开始记牌。");
@@ -60,7 +74,7 @@ public class MainActivity extends Activity {
                 Uri.parse("package:" + getPackageName()));
         try {
             startActivityForResult(intent, REQ_OVERLAY);
-            status.setText("请在系统设置里找到 JJ记牌器，开启\"显示在其他应用上层\"，然后返回。");
+            status.setText("请在系统设置里找到 JJ记牌器，开启「显示在其他应用上层」，然后返回。");
         } catch (Exception e) {
             status.setText("无法自动跳转，请手动去：设置 → 应用设置 → 授权管理 → 悬浮窗 → 开启 JJ记牌器");
         }
@@ -88,6 +102,7 @@ public class MainActivity extends Activity {
             s.putExtra("code", res);
             s.putExtra("data", data);
             startForegroundService(s);
+            MyApplication.log("startForegroundService invoked");
             finish();
         }
     }

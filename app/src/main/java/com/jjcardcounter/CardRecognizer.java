@@ -68,54 +68,58 @@ public class CardRecognizer {
         return loaded;
     }
 
-    /** 识别手牌区（扇开的一排牌），返回每种牌型(0..14)的出现次数 */
-    public int[] recognizeHand(Bitmap area) {
+    /**
+     * 通用区域识别：在裁剪区域【顶部 topRows 个牌角高度】范围内，做 x 方向密集
+     * NCC 滑动，找到所有牌角并分类。手牌区和出牌区都用这个方法，统一逻辑、避免
+     * 亮度投影在真机上产生的大量假峰——牌面纹理/UI 不是牌角形状，NCC 会自动过滤，
+     * 只有真实牌角能拿到 >= 阈值的匹配分。
+     *
+     * 扫顶部若干行（而非全高）是为了兼顾性能：手牌区牌角固定在牌顶，topRows=1 即可；
+     * 出牌区位置稍浮动，topRows=6 覆盖牌组顶部。裁剪框顶部只要 <= 牌组顶部即可，
+     * 不用精确到像素，底部随意。坐标在 CardCounterService 里校准。
+     */
+    public int[] recognizeArea(Bitmap area, int topRows) {
         int[] counts = new int[15];
         if (!loaded || area == null) return counts;
         int w = area.getWidth(), h = area.getHeight();
-        int[] gray = toGrayArray(area);
-        int[] edges = detectCardEdges(gray, w, h);
-        double cardW = 0.046 * w;
-        int cw = Math.max(TW, (int) (0.45 * cardW));
+        int cw = Math.max(TW, (int) (w * 0.020));
         int ch = (int) (cw / CORNER_ASPECT);
         if (ch > h) ch = h;
-        for (int ex : edges) {
-            int x0 = Math.max(0, Math.min(w - cw, ex));
-            Bitmap crop = Bitmap.createBitmap(area, x0, 0, cw, ch);
-            classify(loadGrayScaled(crop));
-            if (bestScore >= NCC_THRESHOLD) counts[bestRank]++;
+        if (cw <= 0 || ch <= 0 || cw > w) return counts;
+        int stepX = Math.max(8, cw / 2);
+        int stepY = ch;
+        int yLimit = Math.min(h, ch * topRows);
+        List<int[]> accepted = new ArrayList<>();
+        for (int y = 0; y + ch <= yLimit; y += stepY) {
+            for (int x = 0; x + cw <= w; x += stepX) {
+                Bitmap crop = Bitmap.createBitmap(area, x, y, cw, ch);
+                classify(loadGrayScaled(crop));
+                if (bestScore >= NCC_THRESHOLD) {
+                    boolean close = false;
+                    for (int[] a : accepted) {
+                        if (Math.abs(a[0] - x) < cw * 0.6 && Math.abs(a[1] - y) < ch * 0.6) {
+                            close = true;
+                            break;
+                        }
+                    }
+                    if (!close) {
+                        counts[bestRank]++;
+                        accepted.add(new int[]{x, y});
+                    }
+                }
+            }
         }
         return counts;
     }
 
-    /**
-     * 识别出牌区（摊开的一排牌），返回每种牌型(0..14)的出现次数。
-     * 出牌区的牌是亮牌在暗背景上 -> detectPlayCenters 找亮峰得到牌数 N，
-     * 然后按区域宽度均分成 N 份，取每份左缘的牌角做 NCC。
-     * 注意：这种方式要求"出牌区裁剪框"正好包住那一排牌（牌从框左缘开始铺满），
-     * 所以每张出牌区要裁剪得紧一点；坐标不准时 NCC 会偏低被阈值过滤，不会
-     * 产生错误计数，只是该区暂时识别不到，待在手机上校准即可。
-     */
+    /** 识别手牌区（扇开的一排牌），返回每种牌型(0..14)的出现次数 */
+    public int[] recognizeHand(Bitmap area) {
+        return recognizeArea(area, 1);
+    }
+
+    /** 识别出牌区（摊开的一排牌），返回每种牌型(0..14)的出现次数 */
     public int[] recognizePlay(Bitmap area) {
-        int[] counts = new int[15];
-        if (!loaded || area == null) return counts;
-        int w = area.getWidth(), h = area.getHeight();
-        int[] gray = toGrayArray(area);
-        int[] centers = detectPlayCenters(gray, w, h);
-        int n = centers.length;
-        if (n == 0) return counts;
-        double cwZone = (double) w / n;
-        int cw = Math.max(TW, (int) (0.45 * cwZone));
-        int ch = (int) (cw / CORNER_ASPECT);
-        if (ch > h) ch = h;
-        for (int i = 0; i < n; i++) {
-            int x0 = (int) (i * cwZone);
-            x0 = Math.max(0, Math.min(w - cw, x0));
-            Bitmap crop = Bitmap.createBitmap(area, x0, 0, cw, ch);
-            classify(loadGrayScaled(crop));
-            if (bestScore >= NCC_THRESHOLD) counts[bestRank]++;
-        }
-        return counts;
+        return recognizeArea(area, 4);
     }
 
     // ---------------- internals ----------------

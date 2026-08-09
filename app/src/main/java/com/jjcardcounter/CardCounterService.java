@@ -53,14 +53,15 @@ public class CardCounterService extends Service {
     private boolean initialized = false;
     private int tickCount = 0;
 
-    // v1.0.5：针对横屏 JJ 斗地主默认坐标（相对实际截图尺寸 [0,1]）
-    // 手牌区（底部中间自己手里的一排）
-    private final float[] handArea = {0.30f, 0.72f, 0.70f, 0.95f};
-    // 出牌区：左家(左上)、自己(中上/中下)、右家(右上)
+    // v1.0.6：基于 36 张真机横屏截图(2400x1080)实测坐标校准。
+    // 手牌区横跨整个底部（之前 0.30~0.70 太窄，只认到 4 张），牌角固定在牌顶。
+    private final float[] handArea = {0.06f, 0.70f, 0.96f, 0.97f};
+    // 出牌区：左家(左侧中部)、自己(中下方)、右家(右侧中部)。
+    // 顶部只要 <= 牌组顶部即可（识别会扫顶部 6 个牌角高度覆盖牌组），底部随意。
     private final float[][] playAreas = {
-            {0.10f, 0.10f, 0.38f, 0.38f}, // 左家
-            {0.35f, 0.42f, 0.65f, 0.62f}, // 自己出牌区（中下方）
-            {0.62f, 0.10f, 0.90f, 0.38f}  // 右家
+            {0.03f, 0.24f, 0.34f, 0.55f}, // 左家
+            {0.33f, 0.38f, 0.67f, 0.66f}, // 自己出牌区（中下方）
+            {0.66f, 0.24f, 0.97f, 0.55f}  // 右家
     };
 
     @Override
@@ -213,7 +214,7 @@ public class CardCounterService extends Service {
             Log.e(TAG, "tick error", e);
             MyApplication.log("tick FAILED: " + Log.getStackTraceString(e));
         }
-        handler.postDelayed(this::tick, 1500);
+        handler.postDelayed(this::tick, 2000);
     }
 
     private static int sum(int[] a) {

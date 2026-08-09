@@ -30,7 +30,6 @@ import android.widget.TextView;
 import androidx.annotation.Nullable;
 
 import java.nio.ByteBuffer;
-import java.util.Objects;
 
 /**
  * 核心服务：录屏 -> 定时截图 -> 识别手牌区/出牌区 -> 更新记牌器 -> 刷新悬浮窗。
@@ -41,6 +40,7 @@ public class CardCounterService extends Service {
 
     private WindowManager wm;
     private View floatView;
+    private TextView tvRemain;
     private int screenW, screenH, density;
     private MediaProjection mMediaProjection;
     private ImageReader mImageReader;
@@ -67,20 +67,27 @@ public class CardCounterService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-        DisplayMetrics m = new DisplayMetrics();
-        wm.getDefaultDisplay().getMetrics(m);
-        density = m.densityDpi;
-        screenW = m.widthPixels;
-        screenH = m.heightPixels;
-        recognizer = new CardRecognizer(getApplicationContext());
-        recognizer.loadTemplates();
-        initFloatView();
+        try {
+            wm = (WindowManager) getSystemService(WINDOW_SERVICE);
+            DisplayMetrics m = new DisplayMetrics();
+            wm.getDefaultDisplay().getMetrics(m);
+            density = m.densityDpi;
+            screenW = m.widthPixels;
+            screenH = m.heightPixels;
+            recognizer = new CardRecognizer(getApplicationContext());
+            recognizer.loadTemplates();
+            initFloatView();
+            // Android 8+ 前台服务必须在创建后尽快 startForeground。
+            createChannelAndForeground();
+        } catch (Exception e) {
+            Log.e(TAG, "onCreate failed", e);
+        }
     }
 
     private void initFloatView() {
         LayoutInflater inflater = (LayoutInflater) getSystemService(LAYOUT_INFLATER_SERVICE);
         floatView = inflater.inflate(R.layout.floating_layout, null);
+        tvRemain = floatView.findViewById(R.id.tv_remain);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -98,18 +105,38 @@ public class CardCounterService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        createChannel();
-        int code = intent.getIntExtra("code", -1);
-        Intent data = intent.getParcelableExtra("data");
-        MediaProjectionManager mpm =
-                (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
-        mMediaProjection = mpm.getMediaProjection(code, Objects.requireNonNull(data));
-        mImageReader = ImageReader.newInstance(screenW, screenH, PixelFormat.RGBA_8888, 2);
-        mVirtualDisplay = mMediaProjection.createVirtualDisplay("jj", screenW, screenH, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                mImageReader.getSurface(), null, null);
-        running = true;
-        handler.postDelayed(this::tick, 1000);
+        if (intent == null) {
+            return START_NOT_STICKY;
+        }
+        // 先保证前台服务状态，避免 5 秒限制崩溃。
+        createChannelAndForeground();
+
+        try {
+            int code = intent.getIntExtra("code", -1);
+            Intent data = intent.getParcelableExtra("data");
+            if (data == null) {
+                showError("录屏授权数据为空，请重新启动应用授权。");
+                return START_NOT_STICKY;
+            }
+            MediaProjectionManager mpm =
+                    (MediaProjectionManager) getSystemService(Context.MEDIA_PROJECTION_SERVICE);
+            mMediaProjection = mpm.getMediaProjection(code, data);
+            if (mMediaProjection == null) {
+                showError("MediaProjection 创建失败，请重新授权录屏。");
+                return START_NOT_STICKY;
+            }
+
+            mImageReader = ImageReader.newInstance(screenW, screenH, PixelFormat.RGBA_8888, 2);
+            mVirtualDisplay = mMediaProjection.createVirtualDisplay("jj", screenW, screenH, density,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    mImageReader.getSurface(), null, null);
+            running = true;
+            showText("记牌器运行中...");
+            handler.postDelayed(this::tick, 1000);
+        } catch (Exception e) {
+            Log.e(TAG, "onStartCommand failed", e);
+            showError("启动失败: " + e.getMessage());
+        }
         return START_STICKY;
     }
 
@@ -171,21 +198,36 @@ public class CardCounterService extends Service {
             sb.append(CardCounter.TYPE_NAMES[i]).append(':').append(rem[i]).append(" ");
         }
         sb.append("  王:").append(rem[0] + rem[1]);
-        TextView tv = floatView.findViewById(R.id.tv_remain);
-        if (tv != null) tv.setText(sb.toString());
+        showText(sb.toString());
     }
 
-    private void createChannel() {
+    private void showText(String text) {
+        if (tvRemain != null) {
+            tvRemain.post(() -> tvRemain.setText(text));
+        }
+    }
+
+    private void showError(String msg) {
+        Log.e(TAG, msg);
+        if (tvRemain != null) {
+            tvRemain.post(() -> tvRemain.setText("[错误] " + msg));
+        }
+    }
+
+    private void createChannelAndForeground() {
         Notification.Builder b = new Notification.Builder(this);
         Intent ni = new Intent(this, MainActivity.class);
         b.setContentIntent(PendingIntent.getActivity(this, 0, ni, PendingIntent.FLAG_IMMUTABLE))
                 .setSmallIcon(android.R.drawable.ic_menu_compass)
-                .setContentText("JJ记牌器运行中");
+                .setContentTitle("JJ记牌器")
+                .setContentText("服务运行中");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             b.setChannelId("jj_chan");
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            nm.createNotificationChannel(new NotificationChannel("jj_chan", "jj",
-                    NotificationManager.IMPORTANCE_LOW));
+            if (nm.getNotificationChannel("jj_chan") == null) {
+                nm.createNotificationChannel(new NotificationChannel("jj_chan", "jj",
+                        NotificationManager.IMPORTANCE_LOW));
+            }
         }
         startForeground(1, b.build());
     }
@@ -203,7 +245,9 @@ public class CardCounterService extends Service {
     public void onDestroy() {
         running = false;
         handler.removeCallbacksAndMessages(null);
-        if (floatView != null) wm.removeView(floatView);
+        try {
+            if (floatView != null) wm.removeView(floatView);
+        } catch (Exception ignored) {}
         if (mVirtualDisplay != null) mVirtualDisplay.release();
         if (mMediaProjection != null) mMediaProjection.stop();
         super.onDestroy();

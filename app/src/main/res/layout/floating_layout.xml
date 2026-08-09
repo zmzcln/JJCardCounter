@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:background="#CC000000"
+    android:padding="8dp"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content">
+
+    <LinearLayout
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tv_remain"
+            android:text="记牌器启动中..."
+            android:textColor="#FFFFFF"
+            android:textSize="16sp"
+            android:maxWidth="620dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+
+        <Button
+            android:id="@+id/btn_close"
+            android:text="关"
+            android:textSize="12sp"
+            android:layout_marginTop="4dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
+
+</FrameLayout>

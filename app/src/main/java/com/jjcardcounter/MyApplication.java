@@ -45,7 +45,7 @@ public class MyApplication extends Application {
         }
         // 防止日志无限增长
         try {
-            File tmp = new File(getFilesDir(), "jj_log_tmp.txt");
+            File tmp = new File(logFile.getParentFile(), "jj_log_tmp.txt");
             BufferedReader br = new BufferedReader(new FileReader(logFile));
             java.util.LinkedList<String> lines = new java.util.LinkedList<>();
             String line;

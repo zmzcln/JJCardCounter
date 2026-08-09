@@ -15,7 +15,7 @@
 
     <TextView
         android:id="@+id/tv_status"
-        android:text="首次使用需要开启\"显示在其他应用上层\"权限。\n点下方按钮会自动跳转系统设置，找到 JJ记牌器 并允许，然后返回再点一次即可开始。"
+        android:text="首次使用需要开启「显示在其他应用上层」权限。点下方按钮会自动跳转系统设置，找到 JJ记牌器 并允许。"
         android:textSize="14sp"
         android:layout_marginBottom="20dp"
         android:layout_width="wrap_content"

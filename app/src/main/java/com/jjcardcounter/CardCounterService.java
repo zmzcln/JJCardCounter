@@ -33,8 +33,8 @@ import java.nio.ByteBuffer;
 
 /**
  * 核心服务：录屏 -> 定时截图 -> 识别手牌区/出牌区 -> 更新记牌器 -> 刷新悬浮窗。
- * 坐标使用归一化比例（相对屏幕尺寸）。
- * v1.0.3：每个关键步骤写 MyApplication.log，便于真机崩溃诊断。
+ * v1.0.5：解决屏幕方向变化导致截图尺寸与裁剪坐标不匹配的问题；
+ *         每次 tick 用实际位图尺寸裁剪；按横屏布局重设默认坐标。
  */
 public class CardCounterService extends Service {
     private static final String TAG = "JJCardCounter";
@@ -53,13 +53,14 @@ public class CardCounterService extends Service {
     private boolean initialized = false;
     private int tickCount = 0;
 
-    // 手牌区（底部一排），归一化 [x0,y0,x1,y1]
-    private final float[] handArea = {0.0f, 0.70f, 1.0f, 0.97f};
-    // 出牌区（三家各自出牌的位置）。坐标系待手机上按真实布局校准。
+    // v1.0.5：针对横屏 JJ 斗地主默认坐标（相对实际截图尺寸 [0,1]）
+    // 手牌区（底部中间自己手里的一排）
+    private final float[] handArea = {0.30f, 0.72f, 0.70f, 0.95f};
+    // 出牌区：左家(左上)、自己(中上/中下)、右家(右上)
     private final float[][] playAreas = {
-            {0.27f, 0.24f, 0.42f, 0.46f}, // 左家
-            {0.34f, 0.18f, 0.60f, 0.66f}, // 自己（中下）
-            {0.58f, 0.24f, 0.73f, 0.46f}  // 右家
+            {0.10f, 0.10f, 0.38f, 0.38f}, // 左家
+            {0.35f, 0.42f, 0.65f, 0.62f}, // 自己出牌区（中下方）
+            {0.62f, 0.10f, 0.90f, 0.38f}  // 右家
     };
 
     @Override
@@ -68,12 +69,7 @@ public class CardCounterService extends Service {
         MyApplication.log("SERVICE onCreate start");
         try {
             wm = (WindowManager) getSystemService(WINDOW_SERVICE);
-            DisplayMetrics m = new DisplayMetrics();
-            wm.getDefaultDisplay().getMetrics(m);
-            density = m.densityDpi;
-            screenW = m.widthPixels;
-            screenH = m.heightPixels;
-            MyApplication.log("screen=" + screenW + "x" + screenH + " density=" + density);
+            updateScreenMetrics();
 
             recognizer = new CardRecognizer(getApplicationContext());
             recognizer.loadTemplates();
@@ -87,6 +83,15 @@ public class CardCounterService extends Service {
             Log.e(TAG, "onCreate failed", e);
             MyApplication.log("SERVICE onCreate FAILED: " + Log.getStackTraceString(e));
         }
+    }
+
+    private void updateScreenMetrics() {
+        DisplayMetrics m = new DisplayMetrics();
+        wm.getDefaultDisplay().getMetrics(m);
+        density = m.densityDpi;
+        screenW = m.widthPixels;
+        screenH = m.heightPixels;
+        MyApplication.log("screen=" + screenW + "x" + screenH + " density=" + density);
     }
 
     private void initFloatView() {
@@ -140,11 +145,7 @@ public class CardCounterService extends Service {
             }
             MyApplication.log("MediaProjection created");
 
-            mImageReader = ImageReader.newInstance(screenW, screenH, PixelFormat.RGBA_8888, 2);
-            mVirtualDisplay = mMediaProjection.createVirtualDisplay("jj", screenW, screenH, density,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    mImageReader.getSurface(), null, null);
-            MyApplication.log("VirtualDisplay created");
+            createCapture();
             running = true;
             showText("记牌器运行中...");
             handler.postDelayed(this::tick, 1000);
@@ -156,12 +157,43 @@ public class CardCounterService extends Service {
         return START_STICKY;
     }
 
+    private void createCapture() {
+        releaseCapture();
+        mImageReader = ImageReader.newInstance(screenW, screenH, PixelFormat.RGBA_8888, 2);
+        mVirtualDisplay = mMediaProjection.createVirtualDisplay("jj", screenW, screenH, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                mImageReader.getSurface(), null, null);
+        MyApplication.log("Capture created " + screenW + "x" + screenH);
+    }
+
+    private void releaseCapture() {
+        if (mVirtualDisplay != null) {
+            mVirtualDisplay.release();
+            mVirtualDisplay = null;
+        }
+        if (mImageReader != null) {
+            mImageReader.close();
+            mImageReader = null;
+        }
+    }
+
     private void tick() {
         if (!running) return;
         try {
+            // 方向可能变化，用实际位图尺寸裁剪
+            updateScreenMetrics();
+            if (mImageReader == null || mImageReader.getWidth() != screenW || mImageReader.getHeight() != screenH) {
+                MyApplication.log("screen size changed, recreate capture");
+                createCapture();
+            }
+
             Image img = mImageReader.acquireLatestImage();
             if (img != null) {
                 Bitmap bmp = imageToBitmap(img);
+                // 用实际图片尺寸覆盖 screenW/screenH，确保裁剪正确
+                screenW = bmp.getWidth();
+                screenH = bmp.getHeight();
+
                 int[] hand = recognizer.recognizeHand(cropArea(bmp, handArea));
                 int[] desk = new int[15];
                 for (float[] a : playAreas) {
@@ -169,12 +201,12 @@ public class CardCounterService extends Service {
                     for (int i = 0; i < 15; i++) desk[i] += c[i];
                 }
                 counter.update(hand, desk);
-                updateUI();
+                updateUI(hand, desk);
                 bmp.recycle();
                 tickCount++;
-                if (tickCount == 1) {
-                    MyApplication.log("first tick OK; handCount=" + sum(hand)
-                            + " deskCount=" + sum(desk));
+                if (tickCount <= 3) {
+                    MyApplication.log("tick#" + tickCount + " size=" + screenW + "x" + screenH
+                            + " hand=" + sum(hand) + " desk=" + sum(desk));
                 }
             }
         } catch (Throwable e) {
@@ -191,10 +223,13 @@ public class CardCounterService extends Service {
     }
 
     private Bitmap cropArea(Bitmap src, float[] a) {
-        int x0 = clamp((int) (a[0] * screenW), 0, src.getWidth());
-        int y0 = clamp((int) (a[1] * screenH), 0, src.getHeight());
-        int x1 = clamp((int) (a[2] * screenW), 0, src.getWidth());
-        int y1 = clamp((int) (a[3] * screenH), 0, src.getHeight());
+        // 用实际位图尺寸，避免方向/分辨率不一致导致空裁剪
+        int w = src.getWidth();
+        int h = src.getHeight();
+        int x0 = clamp((int) (a[0] * w), 0, w);
+        int y0 = clamp((int) (a[1] * h), 0, h);
+        int x1 = clamp((int) (a[2] * w), 0, w);
+        int y1 = clamp((int) (a[3] * h), 0, h);
         if (x1 <= x0 || y1 <= y0) return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
         return Bitmap.createBitmap(src, x0, y0, x1 - x0, y1 - y0);
     }
@@ -218,7 +253,7 @@ public class CardCounterService extends Service {
         return bmp;
     }
 
-    private void updateUI() {
+    private void updateUI(int[] hand, int[] desk) {
         int[] rem = counter.getRemaining();
         StringBuilder sb = new StringBuilder();
         sb.append("剩余  ");
@@ -226,6 +261,7 @@ public class CardCounterService extends Service {
             sb.append(CardCounter.TYPE_NAMES[i]).append(':').append(rem[i]).append(" ");
         }
         sb.append("王:").append(rem[0] + rem[1]);
+        sb.append("\n手:").append(sum(hand)).append(" 桌:").append(sum(desk));
         showText(sb.toString());
     }
 
@@ -264,11 +300,9 @@ public class CardCounterService extends Service {
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
-        if (wm == null) return;
-        DisplayMetrics m = new DisplayMetrics();
-        wm.getDefaultDisplay().getMetrics(m);
-        screenW = m.widthPixels;
-        screenH = m.heightPixels;
+        MyApplication.log("onConfigurationChanged orientation=" + newConfig.orientation);
+        updateScreenMetrics();
+        // tick() 里检测到尺寸变化会自动重建 ImageReader
     }
 
     @Override
@@ -280,7 +314,7 @@ public class CardCounterService extends Service {
             if (floatView != null) wm.removeView(floatView);
         } catch (Exception ignored) {
         }
-        if (mVirtualDisplay != null) mVirtualDisplay.release();
+        releaseCapture();
         if (mMediaProjection != null) mMediaProjection.stop();
         super.onDestroy();
     }
